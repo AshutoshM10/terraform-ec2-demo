@@ -1,0 +1,62 @@
+name: terraform
+
+# PR -> plan only. Merge/push to main -> plan + apply.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "*.tf"
+      - ".terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "*.tf"
+      - ".terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # lets the job request an OIDC token to assume the AWS role
+  contents: read
+
+# Never run two applies against the same state at once.
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      - name: init
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: validate
+        run: terraform validate
+
+      - name: plan
+        run: terraform plan -input=false -var="region=${{ vars.AWS_REGION }}" -out=tfplan
+
+      - name: apply
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: terraform apply -input=false tfplan
